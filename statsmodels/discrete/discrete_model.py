@@ -18,6 +18,8 @@ W. Greene. `Econometric Analysis`. Prentice Hall, 5th. edition. 2003.
 
 __all__ = ["Poisson", "Logit", "Probit", "MNLogit", "NegativeBinomial"]
 
+import itertools
+
 import numpy as np
 from scipy.special import gammaln
 from scipy import stats, special, optimize  # opt just for nbin
@@ -761,6 +763,88 @@ class CountModel(DiscreteModel):
                     "argument method == %s, which is not handled" % method)
         return L1CountResultsWrapper(discretefit)
     fit_regularized.__doc__ = DiscreteModel.fit_regularized.__doc__
+
+
+# This is copied directly from the official itertools recipes.
+def unique_everseen(iterable, key=None):
+    "List unique elements, preserving order. Remember all elements ever seen."
+    # unique_everseen('AAAABBBCCDAABBB') --> A B C D
+    # unique_everseen('ABBCcAD', str.lower) --> A B C D
+    seen = set()
+    seen_add = seen.add
+    if key is None:
+        for element in itertools.ifilterfalse(seen.__contains__, iterable):
+            seen_add(element)
+            yield element
+    else:
+        for element in iterable:
+            k = key(element)
+            if k not in seen:
+                seen_add(k)
+                yield element
+
+
+class BigDataMultinomialModel(MultinomialModel):
+    def initialize(self):
+        """
+        Preprocesses the data for MNLogit.
+
+        This is copypasted from MultinomialModel.initialize().
+        Turns the endogenous variable into an array of dummies and assigns
+        J and K.
+        """
+        super(MultinomialModel, self).initialize()
+
+        # In this big data class, we are more careful about large matrices.
+        # Make one pass through the observed data labels just to extract
+        # the category labels.
+        labels = list(unique_everseen(self.endog))
+        self._index_to_label = dict(enumerate(labels))
+        self._label_to_index = dict((x, i) for i, x in enumerate(labels))
+        self._ynames_map = self._index_to_label
+        self._wendog = None
+
+        # Add some member variables with clearer meanings.
+        # Sometimes we might use self._ncategories - 1 when one of the
+        # categories is treated as a reference category.
+        # We might use self._npredictors + 1 when we have
+        # a constant predictor that acts as an intercept.
+        self._ncategories = len(self._ynames_map)
+        self._npredictors = self.exog.shape[1]
+        self._nobs = self.exog.shape[0]
+
+        # This code is left over from the original copypasting.
+        self.J = len(self._ynames_map)
+        self.K = self.exog.shape[1]
+        self.df_model *= (self.J-1)
+        self.df_resid = self.exog.shape[0] - self.df_model - (self.J-1)
+
+        #This is also a "whiten" method as used in other models (eg regression)
+        wendog, ynames = tools.categorical(self.endog, drop=True,
+                dictnames=True)
+        self._ynames_map = ynames
+        self.wendog = wendog    # don't drop first category
+        self.J = float(wendog.shape[1])
+        self.K = float(self.exog.shape[1])
+        self.df_model *= (self.J-1) # for each J - 1 equation.
+        self.df_resid = self.exog.shape[0] - self.df_model - (self.J-1)
+
+    def endog_index_slice(self, start, stop, step):
+        for label in self.endog[start : stop : step]:
+            yield self._label_to_index[label]
+
+    def wendog_slice(self, start, stop, step):
+        for idx in self.endog_index_slice(start, stop, step):
+            row = [0] * self._ncategories
+            row[idx] = 1
+            yield row
+
+    @property
+    def wendog(self):
+        if self._wendog is not None:
+            self._wendog = np.asanyarray(self.wendog_slice(0, self._nobs, 1))
+        return self._wendog
+
 
 
 class OrderedModel(DiscreteModel):
